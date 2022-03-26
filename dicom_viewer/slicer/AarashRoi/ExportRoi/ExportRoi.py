@@ -1,3 +1,6 @@
+# NOTE: This code is expected to run in a virtual Python environment.
+
+from abc import ABC, abstractmethod, staticmethod
 import os
 import unittest
 import logging
@@ -9,9 +12,13 @@ import numpy as np
 import csv
 import sys
 import traceback
+import highdicom
+from highdicom.seg import Segmentation
+from pydicom.sr.codedict import codes
 
 from typing import Any, List, Union
-from abc import ABC, abstractmethod, staticmethod
+DicomFile = Union[pydicom.dataset.FileDataset, pydicom.dicomdir.DicomDir]
+
 
 #
 # ExportRoi
@@ -267,7 +274,11 @@ class AbstractRoi(ABC):
     @abstractmethod
     def get_centroid(self) -> List[float]:
         pass
+    @abstractmethod
     def get_area_millimeters(self) -> float:
+        pass
+    @abstractmethod
+    def get_spanned_dicom_files(self) -> List[DicomFile]:
         pass
 
     #########################
@@ -289,13 +300,13 @@ class AbstractRoi(ABC):
     # Because of this inverse relationship, both voxel_to_world 
     # and world_to_voxel negate the coordinate input.
     @staticmethod
-    def voxel_to_world(vX, vY, spacing, origin):
+    def voxel_to_world(vX: int, vY: int, spacing: List[float], origin: List[float]):
         wX = -(vX * spacing[0]) + origin[0]
         wY = -(vY * spacing[1]) + origin[1]
         return wX, wY
 
     @staticmethod
-    def world_to_voxel(wX, wY, spacing, origin):
+    def world_to_voxel(wX: float, wY: float, spacing: List[float], origin: List[float]):
         vX = -(wX - origin[0]) / spacing[0]
         vY = -(wY - origin[1]) / spacing[1]
         return round(vX), round(vY)
@@ -314,21 +325,22 @@ class AbstractRoi(ABC):
             )
         return mask
 
-class AnnotatedDicom:
+class DicomViewerState:
+    dicom_files: List[DicomFile]
+    rois: List[AbstractRoi]
+
     def __init__(
-      self,
-      dicom_file: Union[pydicom.dataset.FileDataset, pydicom.dicomdir.DicomDir],
-      source_file_path: str,
-      roi_list: List[AbstractRoi]
+      self, 
+      dicom_files: List[DicomFile], 
+      rois: List[AbstractRoi]
     ):
-        self.dicom_file: Union[pydicom.dataset.FileDataset, pydicom.dicomdir.DicomDir] = dicom_file
-        self.source_file_path: str = source_file_path
-        self.roi_list: List[AbstractRoi] = roi_list
+        self.dicom_files = dicom_files
+        self.rois = rois
 
 # An abstraction around a DICOM viewer for producing annotated DICOM files.
 class AbstractDicomViewerBackend(ABC):
    @abstractmethod
-   def list_annotated_dicom(self) -> List[AnnotatedDicom]:
+   def list_rois(self) -> List[AbstractRoi]:
        pass
 
 # An abstraction around any action that this tool ought to perform.
@@ -354,16 +366,15 @@ class SlicerBackend(AbstractDicomViewerBackend):
     def __init__(self, vtkMRMLScalarVolumeNode):
         self.volume_node = vtkMRMLScalarVolumeNode
 
-    def list_annotated_dicom(self) -> List[AnnotatedDicom]:
+    def list_rois(self) -> List[AbstractRoi]:
         # Collect all dicom files from the volume node.
         logging.info("Listing annotated dicom...")
-        annotated_dicom_list = []
+        dicom_files: List[DicomFile] = []
         inst_uids = self.volume_node.GetAttribute("DICOM.instanceUIDs").split()
         for inst_uid in inst_uids: 
             source_file_path = slicer.dicomDatabase.fileForInstance(inst_uid)
             dicom_file = pydicom.read_file(source_file_path)
-            annotated_dicom = AnnotatedDicom(dicom_file, source_file_path, [])
-            annotated_dicom_list.append(annotated_dicom)
+            dicom_files.append(dicom_file)
 
         # iterate over ROIs. Filter out ROIs that don't reference this volume node.
         roi_nodes = slicer.mrmlScene.GetNodesByClass("vtkMRMLAnnotationROINode")
@@ -377,22 +388,22 @@ class SlicerBackend(AbstractDicomViewerBackend):
             return z_min < z_coordinate and z_max > z_coordinate
 
         # Append the ROI to all relevant slices
+        rois = []
         for roi_node in roi_nodes:
-            relevant_annotated_dicom = [x for x in annotated_dicom_list if contains(roi_node, x.dicom_file)]
-            logging.info("Found %d relevant dicom for %s" % (len(relevant_annotated_dicom), roi_node.GetName()))
-            roi = SlicerRoi(roi_node, self.volume_node)
-            for annotated_dicom in relevant_annotated_dicom:
-                annotated_dicom.roi_list.append(roi)
+            spanned_dicom_files = [dicom_file for dicom_file in dicom_files if contains(roi_node, dicom_file)]
+            logging.info("Found %d relevant dicom for %s" % (len(spanned_dicom_files), roi_node.GetName()))
+            roi = SlicerRoi(roi_node, self.volume_node, spanned_dicom_files)
+            for annotated_dicom in spanned_dicom_files:
+                rois.append(roi)
 
-        # Return only the slices which have an annotation
-        annotated_dicom_list = [x for x in annotated_dicom_list if len(x.roi_list) > 0]
-        logging.info("Done listing annotated dicom... %d" % len(annotated_dicom_list))
-        return annotated_dicom_list
+        logging.info("Done listing ROIs... %d" % len(rois))
+        return rois
 
 class SlicerRoi(AbstractRoi):
-    def __init__(self, vtkMRMLAnnotationROINode, vtkMRMLScalarVolumeNode):
+    def __init__(self, vtkMRMLAnnotationROINode, vtkMRMLScalarVolumeNode, spanned_dicom_files):
         self.roi = vtkMRMLAnnotationROINode
         self.volume_node = vtkMRMLScalarVolumeNode
+        self.spanned_dicom_files = spanned_dicom_files
 
     # Returns the center of ROI in 3D world coordinates.
     def get_centroid(self) -> List[float]:
@@ -404,8 +415,6 @@ class SlicerRoi(AbstractRoi):
     # Returns the area of the cross-section of the ROI around the centroid.
     # In this Slicer implementation, we assume the ROI is a rectangle.
     def get_area_millimeters(self):
-        # GetRadiusXYZ is units of cm. We want units of mm^2.
-        # Thus we mutiply area by the square of mm per cm, which is 10^2 = 100.
         radius = [0, 0, 0]
         self.roi.GetRadiusXYZ(radius)
         area = radius[0]*radius[1]*2
@@ -421,8 +430,18 @@ class SlicerRoi(AbstractRoi):
         mask = np.zeros((512, 512)).astype(int)
         mask[min_x:max_x, min_y:max_y] = 1
         return np.swapaxes(mask, 0, 1)
+    
+    @abstractmethod
+    def get_spanned_dicom_files(self) -> List[DicomFile]:
+        return self.spanned_dicom_files
 
 class WriteToDicomOverlay(AbstractAction):
+    def __init__(self): 
+        # Each DICOM file may store up to 16 overlays. 
+        # This map from Series UID to index tracks how many 
+        # overlays have already been applied for each DICOM file. 
+        self.roi_index_map = {}
+
     def apply(self, annotated_dicom):
         dcm = annotated_dicom.dicom_file
         for roi_idx, roi in enumerate(annotated_dicom.roi_list):
@@ -482,6 +501,47 @@ class AppendToCsv(AbstractAction):
     def __repr__(self):
         return "AppendToCsv"
 
+# AARASH TODO FINISH AND TEST
+class ExportToDicomSeg(AbstractAction): 
+  def __init__(self):
+    pass
+
+    # Describe the algorithm that created the segmentation
+    algorithm_identification = highdicom.AlgorithmIdentificationSequence(
+        name='aarash_dicom_plugin',
+        version='v1.0',
+        family=codes.cid7162.ArtificialIntelligence
+    )
+
+    # Describe the segment
+    description_segment_1 = highdicom.seg.SegmentDescription(
+        segment_number=1,
+        segment_label='first segment',
+        segmented_property_category=codes.cid7150.Tissue,
+        segmented_property_type=codes.cid7166.ConnectiveTissue,
+        algorithm_type=highdicom.seg.SegmentAlgorithmTypeValues.AUTOMATIC,
+        algorithm_identification=algorithm_identification,
+        tracking_uid=highdicom.UID(),
+        tracking_id='test segmentation of slide microscopy image'
+    )
+
+    # Create the Segmentation instance
+    seg_dataset = Segmentation(
+        source_images=[image_dataset],
+        pixel_array=mask,
+        segmentation_type=highdicom.seg.SegmentationTypeValues.BINARY,
+        segment_descriptions=[description_segment_1],
+        series_instance_uid=highdicom.UID(),
+        series_number=2,
+        sop_instance_uid=highdicom.UID(),
+        instance_number=1,
+        manufacturer='Manufacturer',
+        manufacturer_model_name='Model',
+        software_versions='v1',
+        device_serial_number='Device XYZ'
+    )
+
+# AARASH TODO FINISH AND TEST
 class ImportFromCsv(AbstractAction):
     def __init__(self, csv_file_path):
         self.csv_file_path = csv_file_path
