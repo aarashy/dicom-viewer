@@ -1,6 +1,6 @@
 #HeaderInfo
 #type=ROITool
-#name=Clear all DICOM header overlays
+#name=Clear DICOM overlays
 #version=2021.08.05
 #author=aheyd@berkeley.edu
 #EndHeaderInfo

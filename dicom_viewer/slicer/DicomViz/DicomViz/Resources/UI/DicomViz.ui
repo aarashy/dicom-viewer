@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>Form</class>
- <widget class="qMRMLWidget" name="ExportRoi">
+ <widget class="qMRMLWidget" name="DicomViz">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -48,20 +48,30 @@
       <item row="2" column="0">
        <widget class="QLabel" name="label">
         <property name="text">
-         <string>Export Action</string>
+         <string>Annotation Action</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
        <widget class="QListWidget" name="actionSelector">
         <item>
+         <property name="text">
+          <string>Export to DICOM Segmentation Object</string>
+         </property>
+        </item>
+        <item>
           <property name="text">
-            <string>DICOM header</string>
+            <string>Embed in DICOM Overlay</string>
           </property>
         </item>
         <item>
          <property name="text">
-          <string>CSV</string>
+          <string>Append to CSV</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Import from CSV</string>
          </property>
         </item>
         <property name="showChildNodeTypes">
@@ -83,9 +93,9 @@
        </widget>
       </item>
       <item row="4" column="1">
-       <widget class="QPlainTextEdit" name="csvPathSelector"/>
+       <widget class="QPlainTextEdit" name="filePathSelector"/>
       </item>
-      <item row="5" column="0">
+      <item row="5" column="1">
        <widget class="QPushButton" name="applyButton">
         <property name="text">
          <string>Apply Action</string>
@@ -108,7 +118,7 @@
  <resources/>
  <connections>
   <connection>
-   <sender>ExportRoi</sender>
+   <sender>DicomViz</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>inputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>

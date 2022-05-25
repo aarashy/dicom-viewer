@@ -1,6 +1,6 @@
 #HeaderInfo
 #type=ROITool
-#name=Export ROI into DICOM Overlay and CSV
+#name=Export to DICOM Overlay
 #version=2021.08.05
 #author=aheyd@berkeley.edu
 #EndHeaderInfo

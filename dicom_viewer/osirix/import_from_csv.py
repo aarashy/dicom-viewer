@@ -1,6 +1,6 @@
 #HeaderInfo
 #type=ROITool
-#name=Import ROIs from CSV into DICOM Overlay
+#name=Import from CSV
 #version=2021.08.05
 #author=aheyd@berkeley.edu
 #EndHeaderInfo
